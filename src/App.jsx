@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { streamExplanation } from './api/anthropic';
+import { streamExplanation } from "./api/aiRouter";
 import PersonaGrid from './components/PersonaGrid';
 import ConceptInput from './components/ConceptInput';
 import ResponseViewer from './components/ResponseViewer';
