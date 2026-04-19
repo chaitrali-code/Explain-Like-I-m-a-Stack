@@ -1,0 +1,27 @@
+/* App-level overrides & extras */
+
+.settings-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--bg-glass-border);
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-base);
+  z-index: 10;
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-btn:hover {
+  transform: scale(1.1) rotate(30deg);
+  box-shadow: var(--shadow-md);
+  border-color: rgba(99, 102, 241, 0.4);
+}
