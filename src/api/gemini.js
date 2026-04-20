@@ -1,43 +1,24 @@
-/**
- * Gemini model fallback chain — if the primary model's quota is
- * exhausted, we try the next one automatically.
- */
 const GEMINI_MODELS = [
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
   "gemini-2.0-flash",
-  "gemini-2.0-flash-lite",
-  "gemini-2.5-flash",
 ];
 
 const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 2000;
 
-/**
- * Wait for the given number of milliseconds.
- */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Checks whether an error is retryable (rate-limit, quota, or model not found).
- */
-function isRetryableError(status, errorMsg) {
-  if (status === 429) return true;
-  if (status === 404) return true; // model not found — try next model
-  if (status === 403 && errorMsg?.toLowerCase().includes("quota")) return true;
-  return false;
+function isRetryableError(status, message) {
+  return (
+    status === 429 ||
+    status === 404 ||
+    (status === 403 && message?.toLowerCase().includes("quota"))
+  );
 }
 
-/**
- * Attempts to call a single Gemini model with retry + exponential backoff.
- *
- * @param {string} model - Gemini model name
- * @param {string} promptText - The full prompt to send
- * @param {string} apiKey - Gemini API key
- * @param {AbortSignal} [signal] - Optional abort signal
- * @param {function} [onStatusUpdate] - Optional status callback
- * @returns {Promise<string>} The generated text
- */
 async function callModel(model, promptText, apiKey, signal, onStatusUpdate) {
   let lastError;
 
@@ -48,28 +29,43 @@ async function callModel(model, promptText, apiKey, signal, onStatusUpdate) {
 
     if (attempt > 0) {
       const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
-      onStatusUpdate?.(`Rate limited — retrying ${model} in ${Math.round(delay / 1000)}s…`);
+      onStatusUpdate?.(`Retrying ${model} in ${delay / 1000}s...`);
       await sleep(delay);
     }
 
     try {
+      const body = {
+        contents: [
+          {
+            parts: [
+              {
+                text: promptText,
+              },
+            ],
+          },
+        ],
+      };
+
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: promptText }] }],
-          }),
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
           signal,
         }
       );
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const msg = errorData?.error?.message || `Gemini API error (${response.status})`;
+      const data = await response.json();
 
-        // If it's a rate-limit error, retry this model
+      if (!response.ok) {
+        console.log("Gemini error:", data);
+
+        const msg =
+          data?.error?.message || `Gemini API error (${response.status})`;
+
         if (isRetryableError(response.status, msg) && attempt < MAX_RETRIES) {
           lastError = new Error(msg);
           continue;
@@ -78,24 +74,24 @@ async function callModel(model, promptText, apiKey, signal, onStatusUpdate) {
         throw new Error(msg);
       }
 
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
       if (!text) {
-        throw new Error("Gemini returned an empty response.");
+        throw new Error("Gemini returned empty response.");
       }
 
       return text;
     } catch (err) {
-      // Re-throw abort errors immediately
       if (err.name === "AbortError") throw err;
 
       lastError = err;
 
-      // Only retry on rate-limit errors
-      const isRetryable = err.message?.toLowerCase().includes("quota") ||
-                           err.message?.includes("429");
-      if (!isRetryable || attempt >= MAX_RETRIES) {
+      const retry =
+        err.message?.toLowerCase().includes("quota") ||
+        err.message?.toLowerCase().includes("resource_exhausted") ||
+        err.message?.includes("429");
+
+      if (!retry || attempt >= MAX_RETRIES) {
         throw err;
       }
     }
@@ -104,46 +100,38 @@ async function callModel(model, promptText, apiKey, signal, onStatusUpdate) {
   throw lastError;
 }
 
-/**
- * Calls the Gemini API with automatic model fallback and retry logic.
- * Tries each model in the fallback chain before giving up.
- *
- * @param {string} promptText - The full prompt to send
- * @param {string} apiKey - Gemini API key
- * @param {AbortSignal} [signal] - Optional abort signal
- * @param {function} [onStatusUpdate] - Optional status callback
- * @returns {Promise<string>} The generated text
- */
 export async function callGemini(promptText, apiKey, signal, onStatusUpdate) {
   let lastError;
 
   for (const model of GEMINI_MODELS) {
-    if (signal?.aborted) {
-      throw new DOMException("Aborted", "AbortError");
-    }
-
     try {
-      onStatusUpdate?.(`Trying ${model}…`);
-      return await callModel(model, promptText, apiKey, signal, onStatusUpdate);
+      onStatusUpdate?.(`Trying ${model}...`);
+
+      return await callModel(
+        model,
+        promptText,
+        apiKey,
+        signal,
+        onStatusUpdate
+      );
     } catch (err) {
       if (err.name === "AbortError") throw err;
 
       lastError = err;
-      const isModelFallbackError =
+
+      const fallback =
         err.message?.toLowerCase().includes("quota") ||
+        err.message?.toLowerCase().includes("resource_exhausted") ||
         err.message?.includes("429") ||
-        err.message?.toLowerCase().includes("not found") ||
         err.message?.includes("404");
 
-      // Only fall through to next model on quota/rate-limit/not-found errors
-      if (!isModelFallbackError) {
+      if (!fallback) {
         throw err;
       }
 
-      onStatusUpdate?.(`${model} quota exceeded, trying next model…`);
+      onStatusUpdate?.(`${model} failed, trying next model...`);
     }
   }
 
-  // All models exhausted
-  throw lastError || new Error("All Gemini models quota exceeded.");
+  throw lastError || new Error("All Gemini models failed.");
 }
